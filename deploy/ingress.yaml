@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: ingress
-          image: github.com/tachyne/tachyne-ingress:latest
+          image: ghcr.io/tachyne/tachyne-ingress:latest
           imagePullPolicy: Always
           env:
             - name: INGRESS_ROUTES
