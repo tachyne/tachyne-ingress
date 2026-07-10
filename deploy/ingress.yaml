@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tachyne-ingress
+  namespace: tachyne
+  labels: {app.kubernetes.io/name: tachyne, app.kubernetes.io/component: ingress}
+spec:
+  replicas: 2 # HA: the only public port — a singleton restart drops everyone
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0} # keep a live front door through rollouts
+  selector:
+    matchLabels: {app.kubernetes.io/name: tachyne, app.kubernetes.io/component: ingress}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: tachyne, app.kubernetes.io/component: ingress, app.kubernetes.io/part-of: tachyne}
+    spec:
+      containers:
+        - name: ingress
+          image: github.com/tachyne/tachyne-ingress:latest
+          imagePullPolicy: Always
+          env:
+            - name: INGRESS_ROUTES
+              value: "770-772=tachyne-gw-java-770.tachyne.svc.cluster.local:25570,776=tachyne-gw-java-776.tachyne.svc.cluster.local:25565"
+            - name: INGRESS_PROXY
+              value: "1"
+            - name: INGRESS_SUPPORTED
+              value: "1.21.5 and 26.2"
+            # Bedrock UDP front door → the now-internal Bedrock gateway service.
+            - name: INGRESS_BEDROCK_BACKEND
+              value: "tachyne-gw-bedrock.tachyne.svc.cluster.local:19132"
+            # Edge IP firewall via tachyne-access (ordered ACL / bans). Empty
+            # URL disables it (allow all). Fails OPEN — the gateways still do
+            # fail-closed identity authz, so this never solely locks the door.
+            - name: INGRESS_ACCESS_URL
+              value: http://tachyne-access.tachyne.svc.cluster.local:8080
+            - name: INGRESS_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tachyne-access-token
+                  key: token
+          ports:
+            - {containerPort: 25565, name: java}
+            - {containerPort: 19132, name: bedrock, protocol: UDP}
+          readinessProbe: {tcpSocket: {port: java}, initialDelaySeconds: 2, periodSeconds: 10}
+          livenessProbe: {tcpSocket: {port: java}, initialDelaySeconds: 10, periodSeconds: 30}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: "1", memory: 96Mi}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}, readOnlyRootFilesystem: true}
+      imagePullSecrets: [{name: forgejo-pull}]
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tachyne-ingress
+  namespace: tachyne
+  labels: {app.kubernetes.io/name: tachyne, app.kubernetes.io/component: ingress}
+spec:
+  type: ClusterIP
+  externalTrafficPolicy: Local # preserve real client IPs (single-node: always safe)
+  externalIPs: [192.0.2.10] # <- your node/LB IP
+  # RakNet has no reconnect: a Bedrock client's datagrams must always reach the
+  # same ingress pod (which holds its UDP session). ClientIP affinity pins it.
+  # Harmless for the Java TCP port (connections already stick per-stream).
+  sessionAffinity: ClientIP
+  sessionAffinityConfig: {clientIP: {timeoutSeconds: 3600}}
+  selector: {app.kubernetes.io/name: tachyne, app.kubernetes.io/component: ingress}
+  ports:
+    - {name: java, port: 25565, targetPort: java, protocol: TCP}
+    - {name: bedrock, port: 19132, targetPort: bedrock, protocol: UDP}
