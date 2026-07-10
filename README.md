@@ -12,6 +12,11 @@ changes between updates. **Bug reports are genuinely useful** — please open a
 GitHub Issue with your client version/edition and what you saw. Contributions
 are welcome too: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+**Just want to run a server?** The [quickstart repo](https://github.com/tachyne/tachyne)
+brings up the whole stack in one command — Docker Compose or Kubernetes,
+classic infinite survival by default, real-Cape-Town earth mode as a variant.
+
+
 
 
 The tachyne cluster's single public Minecraft entrypoint. Everything enters
