@@ -16,6 +16,10 @@ are welcome too: see [CONTRIBUTING.md](CONTRIBUTING.md).
 brings up the whole stack in one command — Docker Compose or Kubernetes,
 classic infinite survival by default, real-Cape-Town earth mode as a variant.
 
+**What's implemented?** Gameplay features live in the world engine, not the
+gateways — see [tachyne-world's feature matrix](https://github.com/tachyne/tachyne-world#what-to-expect-vanilla-parity-at-a-glance)
+for what to expect (implemented / partial / missing) as a player.
+
 
 
 
