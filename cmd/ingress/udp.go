@@ -34,8 +34,12 @@ type bedrockSession struct {
 	last    time.Time    // last client activity (for idle reaping)
 }
 
-// serveBedrock runs the UDP front door until the process exits.
-func serveBedrock(listen, backendAddr string, guard *ipGuard) {
+// serveBedrock runs the UDP front door until the process exits. maxSessions
+// bounds the live session table (0 = unbounded): UDP source addresses are
+// spoofable, so a spray of forged addresses would otherwise open an unbounded
+// number of backend sockets + goroutines before the idle reaper runs. Once the
+// table is full, new clients are dropped until a session is reaped.
+func serveBedrock(listen, backendAddr string, guard *ipGuard, maxSessions int) {
 	baddr, err := net.ResolveUDPAddr("udp", backendAddr)
 	if err != nil {
 		log.Fatalf("INGRESS_BEDROCK_BACKEND %q: %v", backendAddr, err)
@@ -62,6 +66,12 @@ func serveBedrock(listen, backendAddr string, guard *ipGuard) {
 		mu.Lock()
 		s := sessions[key]
 		if s == nil {
+			// Capacity check first — cheapest possible drop under a spoofed flood,
+			// before the guard lookup or a backend dial.
+			if maxSessions > 0 && len(sessions) >= maxSessions {
+				mu.Unlock()
+				continue // table full — drop; no session, no backend socket
+			}
 			// Edge firewall for a new client (non-blocking; see allowCached).
 			if !guard.allowCached(caddr.IP.String()) {
 				mu.Unlock()

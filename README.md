@@ -78,17 +78,44 @@ identity check is the backstop). Empty `INGRESS_ACCESS_URL` disables it. Identit
 whitelist/blacklist stays at the gateways (the only place a decrypted identity —
 especially Bedrock's, encrypted in RakNet — exists).
 
+## Edge rate limiting
+
+Load caps sit in front of everything else, so a connection flood can't exhaust
+goroutines or memory and cycle the front door. All are best-effort and tunable;
+a zero bound disables that check.
+
+- **Java (TCP)** — three limits applied at accept, before a goroutine spawns: a
+  **global** concurrent-connection ceiling, a **per-source-IP** concurrent
+  ceiling, and a **per-IP new-connection rate** (token bucket, `rate`/sec with a
+  `burst`). The source IP is real here — a TCP connection only reaches accept
+  after its handshake completes — so per-IP limits bite. A rejected connection
+  is closed immediately. (A large shared NAT may need `INGRESS_MAX_CONNS_PER_IP`
+  raised.)
+- **Bedrock (UDP)** — a **global live-session cap**. UDP source addresses are
+  spoofable, so a spray of forged addresses would otherwise open unbounded
+  backend sockets before the 60s reaper runs; the cap bounds the table
+  regardless of spoofing. Per-IP UDP limits would be moot and are not attempted.
+
+Separately, packets ingress reads before splicing (the handshake, and locally
+answered status/ping) are capped at 32 KiB, so a client can't declare a huge
+frame length and force a matching allocation.
+
 ## Configuration (env)
 
 ```
-INGRESS_LISTEN           TCP listen address                  (default ":25565")
-INGRESS_ROUTES           "770-772=host:port,776=host:port"   (required)
-INGRESS_SUPPORTED        human-readable list for unknown versions
-INGRESS_PROXY            "1" = prefix PROXY protocol v1 to Java backends
-INGRESS_BEDROCK_LISTEN   UDP listen address                  (default ":19132")
-INGRESS_BEDROCK_BACKEND  internal Bedrock gateway host:port  ("" = Bedrock off)
-INGRESS_ACCESS_URL       tachyne-access base URL             ("" = IP firewall off)
-INGRESS_ACCESS_TOKEN     bearer token for the access API
+INGRESS_LISTEN                TCP listen address              (default ":25565")
+INGRESS_ROUTES                "770-772=host:port,776=host:port"   (required)
+INGRESS_SUPPORTED             human-readable list for unknown versions
+INGRESS_PROXY                 "1" = prefix PROXY protocol v1 to Java backends
+INGRESS_BEDROCK_LISTEN        UDP listen address              (default ":19132")
+INGRESS_BEDROCK_BACKEND       internal Bedrock gateway host:port ("" = Bedrock off)
+INGRESS_ACCESS_URL            tachyne-access base URL         ("" = IP firewall off)
+INGRESS_ACCESS_TOKEN          bearer token for the access API
+INGRESS_MAX_CONNS             global concurrent Java conns    (default 4096; 0=off)
+INGRESS_MAX_CONNS_PER_IP      per-source-IP concurrent Java conns (default 32; 0=off)
+INGRESS_CONN_RATE             per-IP new Java conns/sec       (default 10;   0=off)
+INGRESS_CONN_BURST            per-IP new-connection burst     (default 20)
+INGRESS_MAX_BEDROCK_SESSIONS  live Bedrock UDP session cap    (default 4096; 0=off)
 ```
 
 Live routing: `770-772 → tachyne-gw-java-770 svc :25570`, `776 →
@@ -104,8 +131,8 @@ go build ./... && go vet ./... && go test ./...
 kubectl apply -f deploy/
 ```
 
-CI builds + pushes the image on every push to main (`REGISTRY_TOKEN` org
-secret, dind via the job network's default gateway). Cutover: `19132/udp` moved
+CI builds + pushes the image on every push to main (the `GITHUB_TOKEN`
+secret, pushing to ghcr.io). Cutover: `19132/udp` moved
 off the `tachyne-gw-bedrock` Service onto this one — apply this repo's `deploy/`
 together with the bedrock repo's internal-only service, then smoke with
 `bedrockprobe` against `<server-ip>:19132`.

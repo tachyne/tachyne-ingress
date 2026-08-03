@@ -20,6 +20,11 @@
 //	                    gateways parse it)
 //	INGRESS_BEDROCK_LISTEN   UDP listen address            (default ":19132")
 //	INGRESS_BEDROCK_BACKEND  Bedrock gateway addr host:port ("" = Bedrock off)
+//	INGRESS_MAX_CONNS        global concurrent Java conns  (default 4096; 0=off)
+//	INGRESS_MAX_CONNS_PER_IP per-source-IP concurrent      (default 32;   0=off)
+//	INGRESS_CONN_RATE        per-IP new conns/sec (bucket) (default 10;   0=off)
+//	INGRESS_CONN_BURST       per-IP new-conn burst size    (default 20)
+//	INGRESS_MAX_BEDROCK_SESSIONS  live UDP session cap     (default 4096; 0=off)
 package main
 
 import (
@@ -58,9 +63,19 @@ func main() {
 		log.Printf("edge IP firewall on (tachyne-access %s)", guard.url)
 	}
 
+	// Edge rate limiter (Java TCP). Each zero bound disables that check.
+	lim := newLimiter(
+		envInt("INGRESS_MAX_CONNS", 4096),
+		envInt("INGRESS_MAX_CONNS_PER_IP", 32),
+		envFloat("INGRESS_CONN_RATE", 10),
+		envFloat("INGRESS_CONN_BURST", 20),
+	)
+	go lim.sweepBuckets(time.Minute)
+
 	// Bedrock (UDP) front door — optional; only runs if a backend is set.
 	if backend := os.Getenv("INGRESS_BEDROCK_BACKEND"); backend != "" {
-		go serveBedrock(envOr("INGRESS_BEDROCK_LISTEN", ":19132"), backend, guard)
+		go serveBedrock(envOr("INGRESS_BEDROCK_LISTEN", ":19132"), backend, guard,
+			envInt("INGRESS_MAX_BEDROCK_SESSIONS", 4096))
 	}
 
 	ln, err := net.Listen("tcp", listen)
@@ -73,13 +88,25 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		ip := hostOf(c.RemoteAddr())
 		// Cheap fast-path: a known-blocked IP is dropped here, before spawning a
 		// goroutine or reading a byte, so a repeat offender costs almost nothing.
-		if guard.blocked(hostOf(c.RemoteAddr())) {
+		if guard.blocked(ip) {
 			c.Close()
 			continue
 		}
-		go handle(c, routes, supported, sendProxy, guard)
+		// Edge rate limit: cap concurrent + new-connection load per source and
+		// overall, so a flood can't exhaust goroutines/memory. Also runs before
+		// any goroutine spawn.
+		release, ok := lim.acquire(ip)
+		if !ok {
+			c.Close()
+			continue
+		}
+		go func() {
+			defer release()
+			handle(c, routes, supported, sendProxy, guard)
+		}()
 	}
 }
 
@@ -94,7 +121,7 @@ func handle(c net.Conn, routes []route, supported string, sendProxy bool, guard 
 	if _, err := br.Peek(1); err != nil {
 		return // TCP probe
 	}
-	pkt, err := protocol.ReadPacket(br)
+	pkt, err := readCappedPacket(br)
 	if err != nil || pkt.ID != 0x00 {
 		return
 	}
@@ -161,7 +188,7 @@ func relay(c net.Conn, br *bufio.Reader, handshakeBody []byte, addr string, send
 // serveStatus answers a status ping for an unsupported version locally.
 func serveStatus(c net.Conn, br *bufio.Reader, proto int32, supported string) {
 	for {
-		pkt, err := protocol.ReadPacket(br)
+		pkt, err := readCappedPacket(br)
 		if err != nil {
 			return
 		}
@@ -215,6 +242,26 @@ func parseRoutes(s string) ([]route, error) {
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return d
+}
+
+func envInt(k string, d int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		log.Printf("%s: not an integer (%q), using default %d", k, v, d)
+	}
+	return d
+}
+
+func envFloat(k string, d float64) float64 {
+	if v := os.Getenv(k); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+		log.Printf("%s: not a number (%q), using default %v", k, v, d)
 	}
 	return d
 }
