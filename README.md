@@ -104,7 +104,7 @@ frame length and force a matching allocation.
 
 ```
 INGRESS_LISTEN                TCP listen address              (default ":25565")
-INGRESS_ROUTES                "770-772=host:port,776=host:port"   (required)
+INGRESS_ROUTES                "776-777=host:port"             (required)
 INGRESS_SUPPORTED             human-readable list for unknown versions
 INGRESS_PROXY                 "1" = prefix PROXY protocol v1 to Java backends
 INGRESS_BEDROCK_LISTEN        UDP listen address              (default ":19132")
@@ -118,11 +118,11 @@ INGRESS_CONN_BURST            per-IP new-connection burst     (default 20)
 INGRESS_MAX_BEDROCK_SESSIONS  live Bedrock UDP session cap    (default 4096; 0=off)
 ```
 
-Live routing: `770-772 → tachyne-gw-java-770 svc :25570`, `776 →
+Live routing: `776–777 →
 tachyne-gw-java-776 svc :25565`, Bedrock UDP → `tachyne-gw-bedrock.tachyne.svc
 :19132`. All gateways are cluster-internal; ingress owns
-`<server-ip>:{25565/tcp, 19132/udp}` via `externalIPs`. Protocols 773–775 are
-deliberately unrouted (deprioritized).
+`<server-ip>:{25565/tcp, 19132/udp}` via `externalIPs`. Anything older than
+776 is unrouted: the client is answered locally with `INGRESS_SUPPORTED`.
 
 ## Build / deploy
 
